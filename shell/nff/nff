@@ -328,7 +328,7 @@ function parse_cmdline() {
       -d|--depth)
         [[ ${ARGV[1]} =~ ^[[:digit:]]+$ ]] \
           || err 1 "invalid depth: ${ARGV[1]:--}"
-        CFG+=([maxdepth]=$2)
+        CFG+=([maxdepth]=${ARGV[1]})
         _shift ARGV 2
         ;;
 
