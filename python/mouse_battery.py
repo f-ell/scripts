@@ -1,18 +1,14 @@
 #!/usr/bin/python
-from openrazer.client import DeviceManager as devmgr
 
-mouse = None
-for dev in devmgr().devices:
-    if dev.name == "Razer Viper Ultimate (Wireless)":
-        mouse = dev
+from openrazer.client import DeviceManager as dm
 
-if mouse == None:
-    print('Mouse not connected!')
+dev = next(
+    (d for d in dm().devices if d.name == "Razer Viper Ultimate (Wireless)"),
+    None
+)
+
+if dev == None:
+    print('device not found')
     exit()
 
-if mouse.is_charging:
-    status = '+'
-else:
-    status = '-'
-
-print(f"Battery: {mouse.battery_level}% ({status})")
+print(f"Battery: {dev.battery_level}% ({dev.is_charging and '+' or '-'})")
