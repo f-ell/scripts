@@ -2,14 +2,15 @@
 use v5.40;
 
 use Term::ANSIColor qw(colored);
+use List::Util      qw(any);
 use List::MoreUtils qw(firstidx);
 
-use constant CLR => { i => 'cyan', w => 'yellow', e => 'red' };
+use constant CLR => { i => 'blue', w => 'yellow', e => 'red' };
+
+my $_lp = '::';
 
 # TODO:
 # + nvme support
-# + multi-mount
-# + (un-)mount prevention for system disks
 
 sub err : prototype($$;$) ( $code, $msg, $ctx ) {
     printf( "ud2: %s%s\n", $msg, $ctx ? ": $ctx" : '' );
@@ -17,7 +18,7 @@ sub err : prototype($$;$) ( $code, $msg, $ctx ) {
 }
 
 sub log : prototype($$) ( $color, $msg ) {
-    printf( "%s %s\n", colored( '::', 'bold', CLR->{$color} ), $msg );
+    printf( "%s %s\n", colored( $_lp, 'bold', CLR->{$color} ), $msg );
 }
 
 sub with_file : prototype($&) ( $file, $sub ) {
@@ -81,31 +82,44 @@ sub get_newest_dev : prototype() () {
 }
 
 sub get_dev_info : prototype($) ($name) {
-    chomp( my @stdout = `udisksctl info -b /dev/$name 2>&1` );
-    err( 1, 'info fatal', colored( "@stdout", CLR->{e} ) ) if $? > 0;
+    chomp( my @fd1 = `udisksctl info -b /dev/$name 2>&1` );
+    err( 1, 'info fatal', colored( "@fd1", CLR->{e} ) ) if $? > 0;
 
     chomp(
-        my @part = @stdout[
-          firstidx( sub { /\bPartitions:/ }, @stdout )
-          .. firstidx( sub { /\bType:/ }, @stdout ) - 1
+        my @part = @fd1[
+          firstidx( sub { /\bPartitions:/ }, @fd1 )
+          .. firstidx( sub { /\bType:/ }, @fd1 ) - 1
         ]
     );
 
+    my $mnt = with_file(
+        '/proc/mounts',
+        sub : prototype($) ($fh) {
+            return [ grep( m{^/dev/$name\s}, <$fh> ) ];
+        },
+    );
+    $mnt = [
+        map( {
+                m{^/dev/$name\s(\S+)}; # /proc/mounts escapes whitespace for us.
+                $1
+        } $mnt->@* )
+    ];
+
     return {
         dev       => $name,
-        is_crypto => scalar( grep( /\bIdUsage:\s+crypto$/,    @stdout ) ) > 0,
-        has_fs    => scalar( grep( /\bIdUsage:\s+filesystem/, @stdout ) ) > 0,
+        is_crypto => scalar( grep( /\bIdUsage:\s+crypto$/,    @fd1 ) ) > 0,
+        has_fs    => scalar( grep( /\bIdUsage:\s+filesystem/, @fd1 ) ) > 0,
         part      => [ sort( map( s{^.+(\d)$}{$1}r, @part ) ) ],
+        mnt       => [ grep( { m{^/run/media/} } $mnt->@* ) ],
     };
 }
 
 sub get_dm_map : prototype($) ($dev) {
     $dev =~ s/(\d+)$//;
-    my $dir = sprintf( "/sys/block/$dev/%sholders", $1 ? "$dev$1/" : '' );
 
     return (
         with_dir(
-            $dir,
+            sprintf( "/sys/block/$dev/%sholders", $1 ? "$dev$1/" : '' ),
             sub : prototype($) ($dh) {
                 return [ grep( !/^\./, readdir($dh) ) ];
             },
@@ -115,7 +129,7 @@ sub get_dm_map : prototype($) ($dev) {
 
 sub get_dm_mapped_name : prototype($) ($dev) {
     my $f = "/sys/block/$dev/dm/name";
-    return $dev if !-e $f;
+    return $dev if !-e $f;    # Device is not mapped.
 
     return with_file(
         $f,
@@ -130,23 +144,12 @@ sub is_locked : prototype($) ($crypt) {
     return length( get_dm_map($crypt) // '' ) == 0;
 }
 
-sub is_mounted : prototype($) ($dev) {
-    my $name = get_dm_mapped_name($dev);
-
-    my $mnt = with_file(
-        '/proc/mounts',
-        sub : prototype($) ($fh) {
-            return scalar( grep( m{^/dev/$name\s}, <$fh> ) );
-        },
-    );
-
-    return $mnt > 0;
-}
-
 sub try_unlock : prototype($) ($crypt) {
     &log( 'w', "unlocking ${\colored($crypt, 'bold')}" );
 
-    chomp( $_ = `udisksctl unlock -b /dev/$crypt 2>&1` );
+    local $/ = '';
+    chomp( local $_ = `udisksctl unlock -b /dev/$crypt 2>&1` );
+
     s/^.+?: GDBus\.Error:.+?: //;
     err( 1, 'unlock fatal', colored( $_, CLR->{e} ) ) if $? > 0;
 
@@ -159,7 +162,10 @@ sub try_unlock : prototype($) ($crypt) {
 sub try_mount : prototype($) ($dev) {
     &log( 'i', "mounting ${\colored( $dev, 'bold' )}" );
 
-    chomp( $_ = `udisksctl mount -b /dev/$dev --no-user-interaction 2>&1` );
+    local $/ = '';
+    chomp( local $_ =
+          `udisksctl mount -b /dev/$dev --no-user-interaction 2>&1` );
+
     s/^.+?: GDBus\.Error:.+?: //;
     err( 1, 'mount fatal', colored( $_, CLR->{e} ) ) if $? > 0;
 
@@ -171,56 +177,78 @@ sub try_mount : prototype($) ($dev) {
 sub try_unmount : prototype($) ($dev) {
     &log( 'i', "unmounting ${\colored($dev, 'bold')}" );
 
-    chomp( $_ = `udisksctl unmount -b /dev/$dev --no-user-interaction 2>&1` );
+    local $/ = '';
+    chomp( local $_ =
+          `udisksctl unmount -b /dev/$dev --no-user-interaction 2>&1` );
+
     s/^.+?: GDBus\.Error:.+?: //;
     err( 1, 'unmount fatal', colored( $_, CLR->{e} ) ) if $? > 0;
 }
 
-# ------------------------------------------------------------------------------
+sub handle : prototype($) ($dev) {
+    my $d      = get_dev_info($dev);
+    my $target = $d->{dev};
 
-dep('udisksctl');
-err( 1, 'too many arguments' ) if scalar(@ARGV) > 1;
+    err( 1, 'not found', colored( $d->{dev}, 'bold' ) )
+      if !-e "/dev/$d->{dev}";
+    err( 1, 'not a block device', colored( $d->{dev}, 'bold' ) )
+      if !-b "/dev/$d->{dev}";
 
-my $d      = get_dev_info( @ARGV ? shift =~ s{^/dev/}{}r : get_newest_dev() );
-my $target = $d->{dev};
+    if ( !( $d->{has_fs} || $d->{is_crypto} ) ) {
+        err( 1, 'not mountable', colored( $d->{dev}, 'bold' ) )
+          if !scalar( @{ $d->{part} } );
 
-err( 1, 'not found', colored( $d->{dev}, 'bold' ) )
-  if !-e "/dev/$d->{dev}";
-err( 1, 'not a block device', colored( $d->{dev}, 'bold' ) )
-  if !-b "/dev/$d->{dev}";
+        # Fall back to first partition.
+        $d = get_dev_info( $d->{dev} . $d->{part}->[0] );
 
-if ( !( $d->{has_fs} || $d->{is_crypto} ) ) {
-    err( 1, 'not mountable', colored( $d->{dev}, 'bold' ) )
-      if !scalar( @{ $d->{part} } );
+        &log(
+            'w',
+"${\colored($target, 'bold')} does not contain a filesystem, using ${\colored($d->{dev}, 'bold')} instead",
+        );
+    }
 
-    # Fall back to partition with the lowest index.
-    $d = get_dev_info( $d->{dev} . $d->{part}->[0] );
+    # Handle standard mount.
+    if ( !$d->{is_crypto} ) {
+        scalar( $d->{mnt}->@* ) > 0
+          ? try_unmount( $d->{dev} )
+          : try_mount( $d->{dev} );
+        return;
+    }
+
+    # Decrypt and handle LUKS devices.
+    my $mapped = 0;
+    is_locked( $d->{dev} ) ? try_unlock( $d->{dev} ) : ( $mapped = 1 );
+
+    # Get information on mapped device.
+    $d = get_dev_info( get_dm_map( $d->{dev} ) );
 
     &log(
         'w',
-"${\colored($target, 'bold')} does not contain a filesystem, using ${\colored($d->{dev}, 'bold')} instead",
-    );
-}
+"${\colored($target, 'bold')} is mapped as ${\colored($d->{dev}, 'bold')}",
+    ) if $mapped;
 
-# Handle standard mount.
-if ( !$d->{is_crypto} ) {
-    is_mounted( $d->{dev} )
+    scalar( $d->{mnt}->@* ) > 0
       ? try_unmount( $d->{dev} )
       : try_mount( $d->{dev} );
-    exit(0);
 }
 
-# Decrypt and handle LUKS devices.
-my $mapped = 0;
-is_locked( $d->{dev} ) ? try_unlock( $d->{dev} ) : ( $mapped = 1 );
+sub run : prototype(@) (@argv) {
+    dep('udisksctl');
 
-$d = get_dev_info( get_dm_map( $d->{dev} ) );
+    if ( !@argv ) {
+        handle( get_newest_dev() );
+        return;
+    }
 
-&log(
-    'w',
-    "${\colored($target, 'bold')} is mapped as ${\colored($d->{dev}, 'bold')}",
-) if $mapped;
+    for (@argv) {
+        if ( scalar( @argv > 1 ) ) {
+            $_lp = '::';
+            &log( 'i', "handling ${\colored( $_, 'bold' )}" );
+            $_lp = '=>';
+        }
 
-is_mounted( $d->{dev} )
-  ? try_unmount( $d->{dev} )
-  : try_mount( $d->{dev} );
+        handle(s{^/dev/}{}r);
+    }
+}
+
+run(@ARGV);
