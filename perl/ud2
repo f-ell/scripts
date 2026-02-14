@@ -92,15 +92,17 @@ sub get_dev_info : prototype($) ($name) {
         ]
     );
 
-    my $mnt = with_file(
+    my $dm_name = get_dm_mapped_name($name);
+    my $mnt     = with_file(
         '/proc/mounts',
         sub : prototype($) ($fh) {
-            return [ grep( m{^/dev/$name\s}, <$fh> ) ];
+            return [ grep( m{^/dev/$dm_name\s}, <$fh> ) ];
         },
     );
     $mnt = [
         map( {
-                m{^/dev/$name\s(\S+)}; # /proc/mounts escapes whitespace for us.
+                m{^/dev/$dm_name\s(\S+)}
+                  ;    # /proc/mounts escapes whitespace for us.
                 $1
         } $mnt->@* )
     ];
