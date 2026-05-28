@@ -8,7 +8,6 @@ typeset -g VERSION='0.2.1'
 
 typeset -A CFG=(
   [c_dir]="${XDG_CACHE_HOME:-~/.cache}/jump"
-  [ifs]="$IFS"
 
   [c_clear]=
 
@@ -57,14 +56,12 @@ function usage {
 	    $PROGRAM - find and jump to child-directories
 
 	SYNOPSIS
-	    $PROGRAM [<options>] [<pattern>]
-	    $PROGRAM [<options>] [<directory>] [<pattern>...]
+	    $PROGRAM [<options>] [<pattern> [<directory>]]
 
 	DESCRIPTION
-	    $PROGRAM uses \`fd\` to find jump candidates.
-	    <directory> specifies the directory in which to search for candidates.
-	    <pattern> may be any regex understood by \`fd\` (uses smart-case by
-	    default).
+      $PROGRAM uses \`fd\` to find jump candidates. <pattern> may be any regex
+      understood by \`fd\` (uses smart-case by default). <directory> specifies
+      the directory in which to search for candidates.
 
 	    In case there is more than on jump candidate, the target is determined
 	    using a fuzzy finder (see OPTIONS and ENVIRONMENT VARIABLES below). Jump
@@ -162,7 +159,7 @@ function version {
 # ------------------------------------------------------------------------- func
 
 function parse_cmdline {
-  typeset -n n_patterns=$1
+  typeset -n n_pattern=$1
   shift
 
   while [[ -n $@ ]]; do
@@ -239,16 +236,15 @@ function parse_cmdline {
 
       --|*)
         [[ $1 == -- ]] && shift
+        n_pattern="$1"
 
         if (( $# > 1 )); then
-          [[ ! -d $1 ]] && err 1 "not a directory: $1"
+          [[ ! -d $2 ]] && err 1 "not a directory: $2"
 
           CFG[cache]=0
-          CFG[cwd]=`realpath "$1"`
-          shift
+          CFG[cwd]=`realpath "$2"`
         fi
 
-        patterns+=("$@")
         break
         ;;
     esac
@@ -259,9 +255,9 @@ function fd_exclude {
   typeset -n n_exclude=$1
 
   local IFS=':'
-  for pattern in $J_IGNORE; do
-    [[ -z $pattern ]] && continue
-    n_exclude+=("$pattern")
+  for i in $J_IGNORE; do
+    [[ -z $i ]] && continue
+    n_exclude+=("$i")
   done
 }
 
@@ -327,10 +323,9 @@ function rejump {
 
 # -------------------------------------------------------------------- execution
 
-typeset -a patterns=()
 typeset -a exclude=()
 typeset -a candidates=()
-typeset target=
+typeset pattern= target=
 
 [[ -d ${CFG[c_dir]} ]] \
   || mkdir -p "${CFG[c_dir]}" \
@@ -339,7 +334,8 @@ typeset target=
   || printf '' >"${CFG[c_jmp]}" \
   || err 4 'could not create jumplist' 
 
-parse_cmdline patterns "$@"
+parse_cmdline pattern "$@"
+
 dep 'fd' 'mkdir' 'realpath' ${CFG[fuzzy]%% *}
 
 if [[ -n ${CFG[c_clear]} ]]; then
@@ -352,13 +348,8 @@ if (( ${J_INVERT_ALL:-0} == 1 )); then
 fi
 
 fd_exclude exclude
-
-cd "${CFG[cwd]}"
-
 if (( ${CFG[cache]} == 1 )); then
-  IFS=':'
-  try_cache "${patterns[*]}" target
-  IFS="${CFG[ifs]}"
+  try_cache "$pattern" target
 
   if [[ -n $target ]]; then
     jump 1 "$target"
@@ -367,13 +358,13 @@ if (( ${CFG[cache]} == 1 )); then
 fi
 
 mapfile < <(
-  IFS='|' fd \
+  fd \
   -d${CFG[depth]} \
   -td \
   ${CFG[hidden]} \
   ${CFG[links]} \
   "${exclude[@]/#/-E}" \
-  -- "${patterns[*]}"
+  -- "$pattern" "${CFG[cwd]}"
 )
 
 if (( ${#MAPFILE[@]} == 0 )); then
@@ -387,9 +378,7 @@ else
 fi
 
 if (( ${CFG[cache]} == 1 )); then
-  IFS=':'
-  write_cache "${patterns[*]}" "$target"
-  IFS="${CFG[ifs]}"
+  write_cache "$pattern" "$target"
 fi
 
 jump 1 "`realpath $target`"
