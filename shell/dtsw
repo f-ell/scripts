@@ -1,0 +1,25 @@
+#!/bin/bash
+
+function err() {
+  printf '%s: %s\n' "${0##*/}" "$2" 1>&2
+  (( $1 > 0 )) && exit $1
+}
+
+(( $# != 2 )) && err 1 "usage: ${0##*/} <monitor-1> <monitor-2>"
+
+typeset m1=$1 m2=$2
+typeset -a dt_a=(`bspc query -D -m $m1`) dt_b=(`bspc query -D -m $m2`)
+
+# Add a temporary desktop to $m1 to allow migrating all other desktops.
+bspc monitor $m1 -a _$m1 || err 2 "could not create temporary desktop '_$m1'"
+
+for d in ${dt_a[@]}; do
+  bspc desktop $d -m $m2
+done
+for d in ${dt_b[@]}; do
+  bspc desktop $d -m $m1
+done
+
+# Remove temporary desktop.
+bspc desktop _$m1 -r
+bspc wm -o
