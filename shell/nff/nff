@@ -2,7 +2,7 @@
 
 typeset -A NFF_META=(
   [PROGRAM]="${0##*/}"
-  [VERSION]='3.0'
+  [VERSION]='3.1'
   [VERBOSE]=1
 )
 typeset -A _clr=(
@@ -60,6 +60,10 @@ function print_help() {
 
 	    -o OPTS, --fuzzy-opts OPTS
 	        Pass OPTS as options to the fuzzy finder.
+
+	    -p, --path
+	        By default, search patterns are matched only against filenames. This
+	        causes matching to be performed against the entire file path.
 
 	    -s, --silent
 	        Suppress all log output.
@@ -322,6 +326,11 @@ function parse_cmdline() {
         _shift ARGV 2
         ;;
 
+      -p|--path)
+        CFG+=([path]=1)
+        _shift ARGV
+        ;;
+
       -y|--fzy)
         NFF_FUZZY=fzy
         _shift ARGV
@@ -421,6 +430,7 @@ typeset -a EXCLUDES=()
 typeset -i _argv_split=0
 typeset -A CFG=(
   [cwd]="$PWD"
+  [path]=0
   [ignore]=1
   [hidden]=1
   [symlink]=1
@@ -442,8 +452,9 @@ ensure_version fd "$NFF_FUZZY"
 [[ -f ${0%/*}/exclude.nff ]] \
   && parse_file EXCLUDES "${0%/*}/exclude.nff" "-E '%s'"
 
-printf -v CFG[fdcmd] 'fd -tf -d%d -p %s %s %s %s' \
+printf -v CFG[fdcmd] 'fd -tf -d%d %s %s %s %s %s' \
   ${CFG[maxdepth]} \
+  `(( ${CFG[path]} == 1 ))  && printf -- '-p'` \
   `(( ${CFG[hidden]} == 1 ))  && printf -- '-H'` \
   `(( ${CFG[symlink]} == 1 )) && printf -- '-L'` \
   `(( ${CFG[ignore]} == 0 ))  && printf -- '-I'` \
